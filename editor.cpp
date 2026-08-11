@@ -17,6 +17,7 @@
 #include <FL/Fl_Scrollbar.H>
 #include <FL/Fl_Text_Buffer.H>
 #include <FL/Fl_Text_Editor.H>
+#include <FL/Fl_Tile.H>
 #include <FL/fl_draw.H>
 
 #include <atomic>
@@ -45,7 +46,12 @@ static int active_document = -1;
 static std::vector<int> search_matches;
 static int current_match = -1;
 class StatusBar;
+class WolfitEditor;
 static StatusBar *status_bar = nullptr;
+static WolfitEditor *editor = nullptr;
+static WolfitEditor *main_editor = nullptr;
+static WolfitEditor *split_editor = nullptr;
+static Fl_Tile *editor_tile = nullptr;
 static Fl_Input *search_input = nullptr;
 static Fl_Group *search_overlay = nullptr;
 static Fl_Box *search_count = nullptr;
@@ -82,13 +88,13 @@ static void navigate_search(int direction);
 static void find_search_matches();
 static void hide_search();
 static bool search_matches_at(const char *text, const std::string &query, int position);
-static bool ctrl_key(const char *latin, const char *russian);
-static unsigned utf8_codepoint(const char *text);
 static void save_active_document_as();
 static void close_active_document();
 static void select_line();
 static void new_document();
 static void open_file_dialog();
+static void split_vertically();
+static void close_split();
 
 static Fl_Text_Display::Style_Table_Entry style_table[] = {
     {0xABB2BF00, FL_COURIER, 14, 0, 0}, {0xE06C7500, FL_COURIER_BOLD, 14, 0, 0},
@@ -165,7 +171,7 @@ public:
         if (event == FL_ENTER || event == FL_MOVE) { hover_ = true; target_thickness_ = 10; animate(); }
         if (event == FL_LEAVE && !dragging_) { hover_ = false; target_thickness_ = 3; animate(); }
         if (event == FL_PUSH && Fl::event_button() == FL_LEFT_MOUSE) { dragging_ = true; target_thickness_ = 10; animate(); }
-        const int result = Fl_Slider::handle(event, x(), y(), w(), h());
+        const int result = Fl_Scrollbar::handle(event);
         if (event == FL_RELEASE && dragging_) { dragging_ = false; hover_ = Fl::event_inside(x(), y(), w(), h()); target_thickness_ = hover_ ? 10 : 3; animate(); }
         return result;
     }
@@ -211,6 +217,7 @@ public:
         cursor_style(SIMPLE_CURSOR);
         selection_color(settings.theme.selection);
         textsize(settings.font_size);
+        linenumber_size(settings.font_size);
         linenumber_width(46);
         linenumber_bgcolor(settings.theme.editor);
         linenumber_fgcolor(0xC0C0C000);
@@ -224,6 +231,7 @@ public:
     }
 
     int handle(int event) override {
+        if (event == FL_FOCUS) editor = this;
         if (event == FL_MOUSEWHEEL) {
             const int modifiers = Fl::event_state() & (FL_CTRL | FL_SHIFT | FL_ALT | FL_META);
             const auto now = std::chrono::steady_clock::now();
@@ -236,17 +244,17 @@ public:
             if (modifiers == 0) last_plain_wheel = now;
         }
         if (event == FL_KEYBOARD && buffer() != nullptr && (Fl::event_state() & FL_CTRL)) {
-            if (ctrl_key("s", "ы")) { save_active_document(); return 1; }
-            if (ctrl_key("f", "а")) { show_search(); return 1; }
-            if (ctrl_key("z", "я")) { if (buffer()->can_undo()) buffer()->undo(); return 1; }
-            if (ctrl_key("y", "н")) { if (buffer()->can_redo()) buffer()->redo(); return 1; }
-            if (ctrl_key("a", "ф")) { buffer()->select(0, buffer()->length()); return 1; }
-            if (ctrl_key("c", "с")) { copy_selection(); return 1; }
-            if (ctrl_key("x", "ч")) { cut_selection(); return 1; }
-            if (ctrl_key("v", "м")) { Fl::paste(*this, 1); return 1; }
-            if (ctrl_key("n", "т")) { new_document(); return 1; }
-            if (ctrl_key("o", "щ")) { open_file_dialog(); return 1; }
-            if (ctrl_key("w", "ц")) { close_active_document(); return 1; }
+            if (Fl::event_key() == 's' || Fl::event_key() == 'S') { save_active_document(); return 1; }
+            if (Fl::event_key() == 'f' || Fl::event_key() == 'F') { show_search(); return 1; }
+            if (Fl::event_key() == 'z' || Fl::event_key() == 'Z') { if (buffer()->can_undo()) buffer()->undo(); return 1; }
+            if (Fl::event_key() == 'y' || Fl::event_key() == 'Y') { if (buffer()->can_redo()) buffer()->redo(); return 1; }
+            if (Fl::event_key() == 'a' || Fl::event_key() == 'A') { buffer()->select(0, buffer()->length()); return 1; }
+            if (Fl::event_key() == 'c' || Fl::event_key() == 'C') { copy_selection(); return 1; }
+            if (Fl::event_key() == 'x' || Fl::event_key() == 'X') { cut_selection(); return 1; }
+            if (Fl::event_key() == 'v' || Fl::event_key() == 'V') { Fl::paste(*this, 1); return 1; }
+            if (Fl::event_key() == 'n' || Fl::event_key() == 'N') { new_document(); return 1; }
+            if (Fl::event_key() == 'o' || Fl::event_key() == 'O') { open_file_dialog(); return 1; }
+            if (Fl::event_key() == 'w' || Fl::event_key() == 'W') { close_active_document(); return 1; }
             if (Fl::event_key() == FL_Down) { navigate_search(1); return 1; }
             if (Fl::event_key() == FL_Up) { navigate_search(-1); return 1; }
             if (Fl::event_key() == FL_Tab) { switch_document((Fl::event_state() & FL_SHIFT) ? -1 : 1); return 1; }
@@ -397,46 +405,27 @@ public:
     }
 };
 
-static WolfitEditor *editor = nullptr;
 static TabStrip *tabs = nullptr;
 static Fl_Menu_Bar *menu_bar = nullptr;
-
-static bool ctrl_key(const char *latin, const char *russian) {
-    const int key = Fl::event_key();
-    const int original = Fl::event_original_key();
-    const char *text = Fl::event_text();
-    const unsigned russian_key = utf8_codepoint(russian);
-    return key == latin[0] || key == std::toupper(latin[0]) ||
-           key == static_cast<int>(russian_key) || original == static_cast<int>(russian_key) ||
-           original == latin[0] || original == std::toupper(latin[0]) ||
-            (text != nullptr && (!std::strcmp(text, latin) || !std::strcmp(text, russian)));
-}
-
-static unsigned utf8_codepoint(const char *text) {
-    const unsigned char first = static_cast<unsigned char>(text[0]);
-    if (first < 0x80) return first;
-    if ((first & 0xe0) == 0xc0) return ((first & 0x1f) << 6) | (static_cast<unsigned char>(text[1]) & 0x3f);
-    if ((first & 0xf0) == 0xe0) return ((first & 0x0f) << 12) | ((static_cast<unsigned char>(text[1]) & 0x3f) << 6) | (static_cast<unsigned char>(text[2]) & 0x3f);
-    return 0;
-}
 
 static int global_key_handler(int event) {
     if (event != FL_KEYBOARD || editor == nullptr || editor->buffer() == nullptr) return 0;
     const int state = Fl::event_state();
     if (!(state & FL_CTRL)) return 0;
-    if (ctrl_key("s", "ы")) { save_active_document(); return 1; }
-    if (ctrl_key("c", "с")) { copy_active_selection(false); return 1; }
-    if (ctrl_key("x", "ч")) { copy_active_selection(true); return 1; }
-    if (ctrl_key("v", "м")) { Fl::paste(*editor, 1); return 1; }
-    if (ctrl_key("a", "ф")) { editor->buffer()->select(0, editor->buffer()->length()); update_ui(); return 1; }
-    if (ctrl_key("f", "а")) { show_search(); return 1; }
-    if (ctrl_key("z", "я")) { if (editor->buffer()->can_undo()) editor->buffer()->undo(); return 1; }
-    if (ctrl_key("y", "н")) { if (editor->buffer()->can_redo()) editor->buffer()->redo(); return 1; }
-    if (ctrl_key("n", "т")) { new_document(); return 1; }
-    if (ctrl_key("o", "щ")) { open_file_dialog(); return 1; }
-    if (ctrl_key("w", "ц")) { close_active_document(); return 1; }
-    if (ctrl_key("q", "й")) { if (Fl::first_window() != nullptr) Fl::first_window()->hide(); return 1; }
-    if (ctrl_key("l", "д")) { select_line(); return 1; }
+    const int key = Fl::event_key();
+    if (key == 's' || key == 'S') { save_active_document(); return 1; }
+    if (key == 'c' || key == 'C') { copy_active_selection(false); return 1; }
+    if (key == 'x' || key == 'X') { copy_active_selection(true); return 1; }
+    if (key == 'v' || key == 'V') { Fl::paste(*editor, 1); return 1; }
+    if (key == 'a' || key == 'A') { editor->buffer()->select(0, editor->buffer()->length()); update_ui(); return 1; }
+    if (key == 'f' || key == 'F') { show_search(); return 1; }
+    if (key == 'z' || key == 'Z') { if (editor->buffer()->can_undo()) editor->buffer()->undo(); return 1; }
+    if (key == 'y' || key == 'Y') { if (editor->buffer()->can_redo()) editor->buffer()->redo(); return 1; }
+    if (key == 'n' || key == 'N') { new_document(); return 1; }
+    if (key == 'o' || key == 'O') { open_file_dialog(); return 1; }
+    if (key == 'w' || key == 'W') { close_active_document(); return 1; }
+    if (key == 'q' || key == 'Q') { if (Fl::first_window() != nullptr) Fl::first_window()->hide(); return 1; }
+    if (key == 'l' || key == 'L') { select_line(); return 1; }
     return 0;
 }
 
@@ -492,6 +481,7 @@ static void rehighlight(Document *document) {
     }
     document->styles->text(styles.c_str());
     std::free(text);
+    if (split_editor != nullptr && split_editor->buffer() == document->text) split_editor->redraw();
 }
 
 static void find_search_matches() {
@@ -604,12 +594,47 @@ static void change_font_size(int amount) {
     save_font_size(size);
     for (Fl_Text_Display::Style_Table_Entry &style : style_table) style.size = size;
     editor->textsize(size);
+    editor->linenumber_size(size);
+    if (split_editor != nullptr) {
+        split_editor->textsize(size);
+        split_editor->linenumber_size(size);
+    }
     editor->linenumber_width(size < 14 ? 42 : size < 18 ? 46 : 50);
+    if (split_editor != nullptr) split_editor->linenumber_width(size < 14 ? 42 : size < 18 ? 46 : 50);
     if (menu_bar != nullptr) menu_bar->textsize(size < 14 ? 12 : size < 20 ? 13 : 14);
     if (tabs != nullptr) tabs->redraw();
     if (status_bar != nullptr) status_bar->redraw();
     editor->redraw();
+    if (split_editor != nullptr) split_editor->redraw();
     update_ui();
+}
+
+static void split_vertically() {
+    if (split_editor != nullptr || editor == nullptr || editor->buffer() == nullptr) return;
+    const int midpoint = editor_tile->x() + editor_tile->w() / 2;
+    editor->resize(editor_tile->x(), editor_tile->y(), midpoint - editor_tile->x() - 2, editor_tile->h());
+    split_editor = new WolfitEditor(midpoint + 2, editor_tile->y(), editor_tile->x() + editor_tile->w() - midpoint - 2, editor_tile->h());
+    split_editor->box(FL_FLAT_BOX);
+    split_editor->textfont(FL_COURIER);
+    split_editor->apply_theme();
+    split_editor->buffer(editor->buffer());
+    if (active_document >= 0) split_editor->highlight_data(documents[active_document]->styles, style_table, 7, 'A', nullptr, nullptr);
+    split_editor->insert_position(editor->insert_position());
+    split_editor->show_insert_position();
+    editor_tile->resizable(split_editor);
+    editor_tile->redraw();
+}
+
+static void close_split() {
+    if (split_editor == nullptr) return;
+    if (editor == split_editor) editor = main_editor;
+    editor_tile->remove(split_editor);
+    delete split_editor;
+    split_editor = nullptr;
+    main_editor->resize(editor_tile->x(), editor_tile->y(), editor_tile->w(), editor_tile->h());
+    editor_tile->resizable(main_editor);
+    main_editor->take_focus();
+    editor_tile->redraw();
 }
 
 static void select_tab(int index, void *) {
@@ -620,6 +645,7 @@ static void select_tab(int index, void *) {
 
 static void close_tab(int index, void *) {
     if (index < 0 || index >= static_cast<int>(documents.size())) return;
+    if (split_editor != nullptr && documents[index]->text == split_editor->buffer()) split_editor->buffer(nullptr);
     Document *document = documents[index];
     document->text->remove_modify_callback(style_update_cb, document);
     delete document->text;
@@ -629,6 +655,8 @@ static void close_tab(int index, void *) {
     if (documents.empty()) {
         active_document = -1;
         editor->buffer(nullptr);
+        if (split_editor != nullptr) split_editor->buffer(nullptr);
+        if (main_editor != nullptr && main_editor != editor) main_editor->buffer(nullptr);
         update_ui();
         return;
     }
@@ -740,6 +768,10 @@ static void switch_document(int direction) {
     active_document = (active_document + direction + count) % count;
     editor->buffer(documents[active_document]->text);
     editor->highlight_data(documents[active_document]->styles, style_table, 7, 'A', nullptr, nullptr);
+    if (split_editor != nullptr) {
+        split_editor->buffer(documents[active_document]->text);
+        split_editor->highlight_data(documents[active_document]->styles, style_table, 7, 'A', nullptr, nullptr);
+    }
     editor->insert_position(documents[active_document]->cursor_position);
     editor->show_insert_position();
     editor->take_focus();
@@ -947,6 +979,8 @@ static void menu_cb(Fl_Widget *, void *data) {
     if (action == 17) { change_font_size(1); return; }
     if (action == 18) { change_font_size(-1); return; }
     if (action == 19) { fl_message("Wolfit " WOLFIT_VERSION "\n\nA fast, lightweight text editor.\n\nCopyright (C) 2026 Wolfit contributors\nLicensed under GPL-3.0-or-later."); return; }
+    if (action == 20) { split_vertically(); return; }
+    if (action == 21) { close_split(); return; }
 }
 
 void create_editor_ui(Fl_Double_Window *window, int argc, char **argv) {
@@ -974,6 +1008,8 @@ void create_editor_ui(Fl_Double_Window *window, int argc, char **argv) {
     menu_bar->add("Viem/Previous Document", FL_CTRL + FL_SHIFT + FL_Tab, menu_cb, reinterpret_cast<void *>(16));
     menu_bar->add("Viem/Increase Font Size", FL_CTRL + '+', menu_cb, reinterpret_cast<void *>(17));
     menu_bar->add("Viem/Decrease Font Size", FL_CTRL + '-', menu_cb, reinterpret_cast<void *>(18));
+    menu_bar->add("Viem/Split Vertically", 0, menu_cb, reinterpret_cast<void *>(20));
+    menu_bar->add("Viem/Close Split", 0, menu_cb, reinterpret_cast<void *>(21));
     menu_bar->add("Settings/Theme: Kate Breeze Dark");
     menu_bar->add("Help/About Wolfit", 0, menu_cb, reinterpret_cast<void *>(19));
     Fl_Menu_Item *items = const_cast<Fl_Menu_Item *>(menu_bar->menu());
@@ -981,8 +1017,12 @@ void create_editor_ui(Fl_Double_Window *window, int argc, char **argv) {
     tabs = new TabStrip(8, 30, 1084, 32, &documents, &settings);
     tabs->callbacks(select_tab, close_tab, reorder_tab, nullptr);
     top_container->end();
+    editor_tile = new Fl_Tile(0, 66, 1100, 598);
     editor = new WolfitEditor(0, 66, 1100, 598);
+    main_editor = editor;
     editor->box(FL_FLAT_BOX); editor->textfont(FL_COURIER); editor->apply_theme();
+    editor_tile->resizable(editor);
+    editor_tile->end();
     SurfaceGroup *bottom_container = new SurfaceGroup(0, 664, 1100, 56);
     status_bar = new StatusBar(8, 692, 1084, 28);
     status_bar->box(FL_FLAT_BOX); status_bar->color(settings.theme.surface); status_bar->labelcolor(settings.theme.muted);
@@ -1016,7 +1056,7 @@ void create_editor_ui(Fl_Double_Window *window, int argc, char **argv) {
     restore_session();
     for (int index = 1; index < argc; ++index) open_document(argv[index]);
     Fl::add_handler(global_key_handler);
-    window->resizable(editor);
+    window->resizable(editor_tile);
     window->end();
     start_ipc();
 }

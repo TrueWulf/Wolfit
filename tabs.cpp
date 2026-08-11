@@ -6,6 +6,8 @@
 
 #include <cstring>
 
+static constexpr int fixed_tab_width = 156;
+
 TabStrip::TabStrip(int x, int y, int width, int height, std::vector<Document *> *documents, const Settings *settings)
     : Fl_Widget(x, y, width, height), documents_(documents), settings_(settings) {}
 
@@ -21,10 +23,8 @@ void TabStrip::active(int index) {
     redraw();
 }
 
-int TabStrip::tab_width(const Document &document) const {
-    const std::string::size_type slash = document.path.find_last_of('/');
-    const char *name = document.path.c_str() + (slash == std::string::npos ? 0 : slash + 1);
-    return static_cast<int>(std::strlen(name)) * 8 + 43;
+int TabStrip::tab_width(const Document &) const {
+    return fixed_tab_width;
 }
 
 int TabStrip::tab_x(int index) const {
@@ -63,8 +63,8 @@ void TabStrip::draw() {
             left += tab_width(*(*documents_)[pressed_tab_]) + 3;
         const int tab_y = y() + 4;
         const int tab_height = h() - 7;
-        fl_color(active ? settings_->theme.tab_active : index == hover_tab_ ? settings_->theme.tab_hover : settings_->theme.surface);
-        fl_rounded_rectf(left, tab_y, width, tab_height, 4);
+        fl_color(active ? settings_->theme.tab_active : index == hover_tab_ ? settings_->theme.tab_hover : settings_->theme.editor);
+        fl_rounded_rectf(left, tab_y, width, tab_height, 3);
         if (index == drop_target_) {
             fl_color(FL_WHITE);
             fl_rounded_rect(left, tab_y, width, tab_height, 4);
@@ -73,7 +73,14 @@ void TabStrip::draw() {
         if ((*documents_)[i]->modified) { fl_color(settings_->theme.line_modified); fl_pie(left + 10, y() + 14, 6, 6, 0, 360); }
         const std::string::size_type slash = (*documents_)[i]->path.find_last_of('/');
         const char *name = (*documents_)[i]->path.c_str() + (slash == std::string::npos ? 0 : slash + 1);
-        fl_color(settings_->theme.text); fl_draw(name, left + 22, y() + 22);
+        const int text_width = width - 48;
+        const int name_width = static_cast<int>(std::strlen(name)) * 8;
+        std::string label = name;
+        if (name_width > text_width) {
+            const int visible = (text_width - 24) / 8;
+            label = std::string(name, visible > 0 ? visible : 0) + "...";
+        }
+        fl_color(settings_->theme.text); fl_draw(label.c_str(), left + 22, y() + 22);
         const int close_x = left + width - 17;
         fl_color(index == hover_close_ ? settings_->theme.text : settings_->theme.muted);
         fl_line(close_x, y() + 14, close_x + 7, y() + 21);
