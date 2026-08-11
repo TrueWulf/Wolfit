@@ -29,3 +29,4 @@ struct Settings {
 
 Theme make_theme(ThemePreset preset);
 Settings load_settings();
+void save_font_size(int font_size);

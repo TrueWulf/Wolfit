@@ -1,8 +1,10 @@
 #include "theme.h"
 
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 static Theme kate_breeze_dark() {
     return {0x2A2E3200, 0x23262900, 0xFCFCFC00, 0xA0A5AA00, 0xFFFFFF00, 0x2D313600,
@@ -39,7 +41,7 @@ Settings load_settings() {
         if (line == "scrollbars=system") settings.minimal_scrollbars = false;
         if (line.rfind("font_size=", 0) == 0) {
             const int size = std::atoi(line.c_str() + 10);
-            if (size >= 10 && size <= 28) settings.font_size = size;
+            if (size >= 4 && size <= 2048) settings.font_size = size;
         }
         if (line.rfind("indent_size=", 0) == 0) {
             const int size = std::atoi(line.c_str() + 12);
@@ -47,4 +49,25 @@ Settings load_settings() {
         }
     }
     return settings;
+}
+
+void save_font_size(int font_size) {
+    const char *home = std::getenv("HOME");
+    if (home == nullptr || font_size < 4 || font_size > 2048) return;
+    const std::string directory = std::string(home) + "/.config/wolfit";
+    std::filesystem::create_directories(directory);
+    const std::string path = directory + "/config";
+    std::ifstream input(path.c_str());
+    std::vector<std::string> lines;
+    std::string line;
+    bool found = false;
+    while (std::getline(input, line)) {
+        if (line.rfind("font_size=", 0) == 0) {
+            lines.push_back("font_size=" + std::to_string(font_size));
+            found = true;
+        } else lines.push_back(line);
+    }
+    if (!found) lines.push_back("font_size=" + std::to_string(font_size));
+    std::ofstream output(path.c_str(), std::ios::trunc);
+    for (const std::string &entry : lines) output << entry << '\n';
 }

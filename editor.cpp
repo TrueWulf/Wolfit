@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <fcntl.h>
 #include <fstream>
 #include <mutex>
@@ -50,6 +51,7 @@ static Fl_Group *search_overlay = nullptr;
 static Fl_Box *search_count = nullptr;
 static Fl_Check_Button *search_case = nullptr;
 static bool search_case_sensitive = false;
+static std::chrono::steady_clock::time_point last_plain_wheel;
 
 struct IpcRequest {
     std::string command;
@@ -222,10 +224,16 @@ public:
     }
 
     int handle(int event) override {
-        if (event == FL_MOUSEWHEEL && (Fl::event_state() & FL_CTRL)) {
-            const int delta = Fl::event_dy();
-            change_font_size(delta > 0 ? -1 : delta < 0 ? 1 : 0);
-            return 1;
+        if (event == FL_MOUSEWHEEL) {
+            const int modifiers = Fl::event_state() & (FL_CTRL | FL_SHIFT | FL_ALT | FL_META);
+            const auto now = std::chrono::steady_clock::now();
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_plain_wheel).count();
+            if (modifiers == FL_CTRL && elapsed > 200) {
+                const int delta = Fl::event_dy();
+                change_font_size(delta > 0 ? -1 : delta < 0 ? 1 : 0);
+                return 1;
+            }
+            if (modifiers == 0) last_plain_wheel = now;
         }
         if (event == FL_KEYBOARD && buffer() != nullptr && (Fl::event_state() & FL_CTRL)) {
             if (ctrl_key("s", "ы")) { save_active_document(); return 1; }
@@ -591,8 +599,9 @@ static void update_ui() { tabs->redraw(); update_status(); status_bar->redraw();
 
 static void change_font_size(int amount) {
     const int size = settings.font_size + amount;
-    if (size < 10 || size > 28) return;
+    if (size < 4 || size > 2048) return;
     settings.font_size = size;
+    save_font_size(size);
     for (Fl_Text_Display::Style_Table_Entry &style : style_table) style.size = size;
     editor->textsize(size);
     editor->linenumber_width(size < 14 ? 42 : size < 18 ? 46 : 50);
@@ -972,29 +981,31 @@ void create_editor_ui(Fl_Double_Window *window, int argc, char **argv) {
     tabs = new TabStrip(8, 30, 1084, 32, &documents, &settings);
     tabs->callbacks(select_tab, close_tab, reorder_tab, nullptr);
     top_container->end();
-    editor = new WolfitEditor(0, 66, 1100, 626);
+    editor = new WolfitEditor(0, 66, 1100, 598);
     editor->box(FL_FLAT_BOX); editor->textfont(FL_COURIER); editor->apply_theme();
-    SurfaceGroup *bottom_container = new SurfaceGroup(0, 692, 1100, 28);
+    SurfaceGroup *bottom_container = new SurfaceGroup(0, 664, 1100, 56);
     status_bar = new StatusBar(8, 692, 1084, 28);
     status_bar->box(FL_FLAT_BOX); status_bar->color(settings.theme.surface); status_bar->labelcolor(settings.theme.muted);
     status_bar->labelsize(11); status_bar->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    search_overlay = new Fl_Group(380, 686, 400, 36);
-    search_overlay->box(FL_ROUNDED_BOX); search_overlay->color(settings.theme.tab_active);
-    search_input = new SearchInput(390, 692, 164, 24);
+    Fl_Box *search_separator = new Fl_Box(0, 691, 1100, 1);
+    search_separator->box(FL_FLAT_BOX); search_separator->color(settings.theme.tab_hover);
+    search_overlay = new Fl_Group(380, 664, 400, 28);
+    search_overlay->box(FL_NO_BOX);
+    search_input = new SearchInput(388, 666, 170, 22);
     search_input->box(FL_BORDER_BOX); search_input->color(0x262A2E00); search_input->textcolor(FL_WHITE);
     search_input->selection_color(0x80808000); search_input->textsize(14); search_input->when(FL_WHEN_CHANGED);
     search_input->callback(search_cb);
-    search_case = new Fl_Check_Button(560, 692, 32, 24, "Aa");
-    search_case->box(FL_FLAT_BOX); search_case->color(settings.theme.tab_active); search_case->labelcolor(settings.theme.muted); search_case->labelsize(11);
+    search_case = new Fl_Check_Button(564, 666, 30, 22, "Aa");
+    search_case->box(FL_FLAT_BOX); search_case->color(settings.theme.surface); search_case->labelcolor(settings.theme.muted); search_case->labelsize(11);
     search_case->callback(search_cb);
-    search_count = new Fl_Box(598, 692, 72, 24, "No matches");
+    search_count = new Fl_Box(598, 666, 72, 22, "No matches");
     search_count->labelcolor(settings.theme.muted); search_count->labelsize(11); search_count->align(FL_ALIGN_CENTER);
-    Fl_Button *previous = new Fl_Button(674, 692, 28, 24, "<");
-    Fl_Button *next = new Fl_Button(704, 692, 28, 24, ">");
-    Fl_Button *close = new Fl_Button(738, 692, 28, 24, "x");
+    Fl_Button *previous = new Fl_Button(674, 666, 28, 22, "<");
+    Fl_Button *next = new Fl_Button(704, 666, 28, 22, ">");
+    Fl_Button *close = new Fl_Button(738, 666, 28, 22, "x");
     Fl_Button *buttons[] = {previous, next, close};
     for (Fl_Button *button : buttons) {
-        button->box(FL_FLAT_BOX); button->color(0x383C4000); button->labelcolor(FL_WHITE); button->labelsize(14);
+        button->box(FL_FLAT_BOX); button->color(settings.theme.surface); button->labelcolor(settings.theme.text); button->labelsize(14);
     }
     previous->callback(search_action_cb, reinterpret_cast<void *>(-1));
     next->callback(search_action_cb, reinterpret_cast<void *>(1));
