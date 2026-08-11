@@ -7,6 +7,7 @@
 #include <FL/Fl.H>
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Button.H>
+#include <FL/Fl_Check_Button.H>
 #include <FL/Fl_File_Chooser.H>
 #include <FL/Fl_Group.H>
 #include <FL/Fl_Input.H>
@@ -46,6 +47,9 @@ class StatusBar;
 static StatusBar *status_bar = nullptr;
 static Fl_Input *search_input = nullptr;
 static Fl_Group *search_overlay = nullptr;
+static Fl_Box *search_count = nullptr;
+static Fl_Check_Button *search_case = nullptr;
+static bool search_case_sensitive = false;
 
 struct IpcRequest {
     std::string command;
@@ -75,6 +79,7 @@ static void search_cb(Fl_Widget *, void *);
 static void navigate_search(int direction);
 static void find_search_matches();
 static void hide_search();
+static bool search_matches_at(const char *text, const std::string &query, int position);
 static bool ctrl_key(const char *latin, const char *russian);
 static unsigned utf8_codepoint(const char *text);
 static void save_active_document_as();
@@ -129,7 +134,7 @@ static bool is_text_file(const char *path) {
 
 class WolfitScrollbar : public Fl_Scrollbar {
 public:
-    WolfitScrollbar(int x, int y, int width, int height) : Fl_Scrollbar(x, y, width, height), visual_thickness_(2), target_thickness_(2) {
+    WolfitScrollbar(int x, int y, int width, int height) : Fl_Scrollbar(x, y, width, height), visual_thickness_(3), target_thickness_(3) {
         box(FL_NO_BOX);
         slider(FL_FLAT_BOX);
     }
@@ -137,12 +142,12 @@ public:
     void draw() override {
         fl_push_clip(x(), y(), w(), h());
         const int range = maximum() - minimum();
-        if (range > 0) {
+        if (range > 0 && slider_size() < 1.0) {
             const bool vertical = h() > w();
             const int track = vertical ? h() : w();
             const int thickness = vertical ? static_cast<int>(visual_thickness_ + 0.5f) : h();
-            int thumb = slider_size() > 0.0 ? static_cast<int>(track * slider_size() + 0.5) : thickness * 3;
-            if (thumb < thickness * 3) thumb = thickness * 3;
+            int thumb = static_cast<int>(track * slider_size() + 0.5);
+            if (thumb < 24) thumb = 24;
             if (thumb > track) thumb = track;
             const int travel = track - thumb;
             const double fraction = static_cast<double>(value() - minimum()) / range;
@@ -155,12 +160,11 @@ public:
     }
 
     int handle(int event) override {
-        if (event == FL_ENTER) { hover_ = true; target_thickness_ = 12; animate(); }
-        if (event == FL_MOVE && Fl::event_inside(x(), y(), w(), h())) { hover_ = true; target_thickness_ = 12; animate(); }
-        if (event == FL_LEAVE && !dragging_) { hover_ = false; target_thickness_ = 2; animate(); }
-        if (event == FL_PUSH && Fl::event_button() == FL_LEFT_MOUSE) dragging_ = true;
+        if (event == FL_ENTER || event == FL_MOVE) { hover_ = true; target_thickness_ = 10; animate(); }
+        if (event == FL_LEAVE && !dragging_) { hover_ = false; target_thickness_ = 3; animate(); }
+        if (event == FL_PUSH && Fl::event_button() == FL_LEFT_MOUSE) { dragging_ = true; target_thickness_ = 10; animate(); }
         const int result = Fl_Slider::handle(event, x(), y(), w(), h());
-        if (event == FL_RELEASE && dragging_) { dragging_ = false; hover_ = Fl::event_inside(x(), y(), w(), h()); target_thickness_ = hover_ ? 12 : 2; animate(); }
+        if (event == FL_RELEASE && dragging_) { dragging_ = false; hover_ = Fl::event_inside(x(), y(), w(), h()); target_thickness_ = hover_ ? 10 : 3; animate(); }
         return result;
     }
 
@@ -171,10 +175,8 @@ private:
 
     void animate() {
         if (visual_thickness_ == target_thickness_) { redraw(); return; }
-        if (visual_thickness_ < target_thickness_) visual_thickness_ += 2;
-        else visual_thickness_ -= 2;
-        if ((visual_thickness_ < target_thickness_ && visual_thickness_ + 2 > target_thickness_) ||
-            (visual_thickness_ > target_thickness_ && visual_thickness_ - 2 < target_thickness_)) visual_thickness_ = target_thickness_;
+        if (visual_thickness_ < target_thickness_) ++visual_thickness_;
+        else --visual_thickness_;
         redraw();
         if (visual_thickness_ != target_thickness_) Fl::repeat_timeout(0.016, animate_cb, this);
     }
@@ -193,6 +195,8 @@ public:
         delete mVScrollBar; delete mHScrollBar;
         mVScrollBar = new WolfitScrollbar(0, 0, 12, 12);
         mHScrollBar = new WolfitScrollbar(0, 0, 8, 8);
+        mVScrollBar->type(FL_VERT_SLIDER);
+        mHScrollBar->type(FL_HOR_SLIDER);
         add(mVScrollBar); add(mHScrollBar);
         mVScrollBar->callback(reinterpret_cast<Fl_Callback *>(v_scrollbar_cb), this);
         mHScrollBar->callback(reinterpret_cast<Fl_Callback *>(h_scrollbar_cb), this);
@@ -354,6 +358,21 @@ public:
     }
 };
 
+class SurfaceGroup : public Fl_Group {
+public:
+    SurfaceGroup(int x, int y, int width, int height) : Fl_Group(x, y, width, height) {}
+
+    void draw() override {
+        fl_push_clip(x(), y(), w(), h());
+        fl_color(settings.theme.surface);
+        fl_rectf(x(), y(), w(), h());
+        fl_color(settings.theme.tab_hover);
+        fl_rectf(x(), y() + h() - 1, w(), 1);
+        fl_pop_clip();
+        Fl_Group::draw();
+    }
+};
+
 class SearchInput : public Fl_Input {
 public:
     SearchInput(int x, int y, int width, int height) : Fl_Input(x, y, width, height) {}
@@ -456,7 +475,7 @@ static void rehighlight(Document *document) {
         const std::string query = search_input->value();
         if (!query.empty()) {
             for (int position = 0; position + static_cast<int>(query.size()) <= length;) {
-                if (!std::memcmp(text + position, query.data(), query.size())) {
+                if (search_matches_at(text, query, position)) {
                     for (unsigned index = 0; index < query.size(); ++index) styles[position + index] = 'G';
                     position += static_cast<int>(query.size());
                 } else ++position;
@@ -476,7 +495,7 @@ static void find_search_matches() {
     char *text = documents[active_document]->text->text();
     const int length = documents[active_document]->text->length();
     for (int pos = 0; pos + static_cast<int>(query.size()) <= length;) {
-        if (!std::memcmp(text + pos, query.data(), query.size())) {
+        if (search_matches_at(text, query, pos)) {
             search_matches.push_back(pos);
             pos += static_cast<int>(query.size());
         } else ++pos;
@@ -484,24 +503,46 @@ static void find_search_matches() {
     std::free(text);
 }
 
+static bool search_matches_at(const char *text, const std::string &query, int position) {
+    for (unsigned index = 0; index < query.size(); ++index) {
+        const unsigned char actual = static_cast<unsigned char>(text[position + index]);
+        const unsigned char expected = static_cast<unsigned char>(query[index]);
+        if (search_case_sensitive ? actual != expected : std::tolower(actual) != std::tolower(expected)) return false;
+    }
+    return true;
+}
+
 static void navigate_search(int direction) {
     if (search_matches.empty()) return;
-    if (current_match < 0) current_match = 0;
+    const int previous = current_match;
+    if (current_match < 0) current_match = direction < 0 ? static_cast<int>(search_matches.size()) - 1 : 0;
     else current_match = (current_match + direction + static_cast<int>(search_matches.size())) % static_cast<int>(search_matches.size());
     const int pos = search_matches[current_match];
     editor->insert_position(pos);
+    editor->buffer()->select(pos, pos + static_cast<int>(std::strlen(search_input->value())));
     editor->show_insert_position();
+    if (search_count != nullptr) {
+        std::string label = std::to_string(current_match + 1) + " / " + std::to_string(search_matches.size());
+        if (previous >= 0 && ((direction > 0 && current_match < previous) || (direction < 0 && current_match > previous))) label += "  Wrapped";
+        search_count->copy_label(label.c_str());
+    }
     editor->redraw();
 }
 
 static void update_search() {
     if (active_document < 0) return;
     find_search_matches();
+    if (search_count != nullptr) {
+        const std::string label = search_matches.empty() ? "No matches" : std::to_string(search_matches.size()) + " matches";
+        search_count->copy_label(label.c_str());
+        search_count->redraw();
+    }
     rehighlight(documents[active_document]);
     editor->redraw();
 }
 
 static void search_cb(Fl_Widget *, void *) {
+    search_case_sensitive = search_case != nullptr && search_case->value() != 0;
     update_search();
 }
 
@@ -513,6 +554,12 @@ static void search_action_cb(Fl_Widget *, void *data) {
 
 static void show_search() {
     if (search_input == nullptr || search_overlay == nullptr) return;
+    int start = 0, end = 0;
+    if (active_document >= 0 && documents[active_document]->text->selection_position(&start, &end) && end > start) {
+        char *selected = documents[active_document]->text->text_range(start, end);
+        search_input->value(selected);
+        std::free(selected);
+    }
     search_overlay->show();
     search_input->take_focus();
     search_input->insert_position(0, search_input->size());
@@ -897,7 +944,8 @@ void create_editor_ui(Fl_Double_Window *window, int argc, char **argv) {
     settings = load_settings();
     style_table[0].color = settings.theme.text;
     for (Fl_Text_Display::Style_Table_Entry &style : style_table) style.size = settings.font_size;
-    menu_bar = new Fl_Menu_Bar(0, 0, 1100, 30);
+    SurfaceGroup *top_container = new SurfaceGroup(0, 0, 1100, 66);
+    menu_bar = new Fl_Menu_Bar(8, 3, 1084, 27);
     menu_bar->box(FL_FLAT_BOX); menu_bar->color(settings.theme.surface); menu_bar->textcolor(settings.theme.text); menu_bar->selection_color(settings.theme.tab_hover);
     menu_bar->add("File/New", FL_CTRL + 'n', menu_cb, reinterpret_cast<void *>(1));
     menu_bar->add("File/Open", FL_CTRL + 'o', menu_cb, reinterpret_cast<void *>(2));
@@ -921,22 +969,29 @@ void create_editor_ui(Fl_Double_Window *window, int argc, char **argv) {
     menu_bar->add("Help/About Wolfit", 0, menu_cb, reinterpret_cast<void *>(19));
     Fl_Menu_Item *items = const_cast<Fl_Menu_Item *>(menu_bar->menu());
     for (int index = 0; index < menu_bar->size(); ++index) items[index].labelcolor(settings.theme.text);
-    tabs = new TabStrip(0, 30, 1100, 36, &documents, &settings);
+    tabs = new TabStrip(8, 30, 1084, 32, &documents, &settings);
     tabs->callbacks(select_tab, close_tab, reorder_tab, nullptr);
+    top_container->end();
     editor = new WolfitEditor(0, 66, 1100, 626);
     editor->box(FL_FLAT_BOX); editor->textfont(FL_COURIER); editor->apply_theme();
-    status_bar = new StatusBar(0, 692, 1100, 28);
+    SurfaceGroup *bottom_container = new SurfaceGroup(0, 692, 1100, 28);
+    status_bar = new StatusBar(8, 692, 1084, 28);
     status_bar->box(FL_FLAT_BOX); status_bar->color(settings.theme.surface); status_bar->labelcolor(settings.theme.muted);
     status_bar->labelsize(11); status_bar->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    search_overlay = new Fl_Group(393, 690, 314, 30);
-    search_overlay->box(FL_ROUNDED_BOX); search_overlay->color(0x383C4000);
-    search_input = new SearchInput(401, 693, 194, 24);
+    search_overlay = new Fl_Group(380, 686, 400, 36);
+    search_overlay->box(FL_ROUNDED_BOX); search_overlay->color(settings.theme.tab_active);
+    search_input = new SearchInput(390, 692, 164, 24);
     search_input->box(FL_BORDER_BOX); search_input->color(0x262A2E00); search_input->textcolor(FL_WHITE);
     search_input->selection_color(0x80808000); search_input->textsize(14); search_input->when(FL_WHEN_CHANGED);
     search_input->callback(search_cb);
-    Fl_Button *previous = new Fl_Button(599, 693, 30, 24, "<");
-    Fl_Button *next = new Fl_Button(631, 693, 30, 24, ">");
-    Fl_Button *close = new Fl_Button(663, 693, 36, 24, "x");
+    search_case = new Fl_Check_Button(560, 692, 32, 24, "Aa");
+    search_case->box(FL_FLAT_BOX); search_case->color(settings.theme.tab_active); search_case->labelcolor(settings.theme.muted); search_case->labelsize(11);
+    search_case->callback(search_cb);
+    search_count = new Fl_Box(598, 692, 72, 24, "No matches");
+    search_count->labelcolor(settings.theme.muted); search_count->labelsize(11); search_count->align(FL_ALIGN_CENTER);
+    Fl_Button *previous = new Fl_Button(674, 692, 28, 24, "<");
+    Fl_Button *next = new Fl_Button(704, 692, 28, 24, ">");
+    Fl_Button *close = new Fl_Button(738, 692, 28, 24, "x");
     Fl_Button *buttons[] = {previous, next, close};
     for (Fl_Button *button : buttons) {
         button->box(FL_FLAT_BOX); button->color(0x383C4000); button->labelcolor(FL_WHITE); button->labelsize(14);
@@ -946,6 +1001,7 @@ void create_editor_ui(Fl_Double_Window *window, int argc, char **argv) {
     close->callback(search_action_cb, nullptr);
     search_overlay->end();
     search_overlay->hide();
+    bottom_container->end();
     restore_session();
     for (int index = 1; index < argc; ++index) open_document(argv[index]);
     Fl::add_handler(global_key_handler);
