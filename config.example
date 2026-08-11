@@ -1,0 +1,7 @@
+# Kate Breeze Dark: theme=kate-breeze-dark
+# One Dark: theme=one-dark
+# Catppuccin Mocha: theme=catppuccin
+theme=kate-breeze-dark
+font_size=17
+indent_size=4
+scrollbars=minimal

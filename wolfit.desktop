@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Wolfit
+Comment=Lightweight Wayland text editor
+Exec=wolfit
+Icon=wolfit
+Terminal=false
+Categories=Utility;TextEditor;
+Keywords=text;editor;code;
